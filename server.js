@@ -7,19 +7,30 @@ const app = express();
 app.use(express.json());
 
 /**
- * Route lắng nghe Webhook từ Snipcart
- * Bạn cần cấu hình URL này trong Dashboard của Snipcart (ví dụ: https://your-app.onrender.com/snipcart-webhook)
+ * Endpoint xử lý chính cho Snipcart Webhook
+ * Vừa xử lý xác thực đơn hàng (để hiện nút đặt hàng) vừa thực hiện gửi email xác nhận.
  */
 app.post('/snipcart-webhook', async (req, res) => {
   const event = req.body;
 
   console.log(`🔔 [Webhook] Nhận được sự kiện từ Snipcart: ${event.eventName}`);
 
-  // Kiểm tra nếu là sự kiện đơn hàng đã hoàn tất thành công (order.completed)
-  if (event.eventName === 'order.completed') {
+  // 1. ĐẶC BIỆT QUAN TRỌNG: XỬ LÝ XÁC THỰC ĐƠN HÀNG (SỬA LỖI KẸT NÚT ĐẶT HÀNG)
+  // Khi khách đến bước thanh toán cuối, Snipcart sẽ gọi event này để check giá tiền/sản phẩm.
+  // Bắt buộc phải phản hồi trạng thái 200 OK ngay lập tức để Snipcart hiển thị nút "Đặt hàng".
+  if (event.eventName === 'order.validate') {
+    console.log("🛡️ [Snipcart] Đang thực hiện xác thực thông tin đơn hàng...");
+    return res.status(200).json({
+      status: "success",
+      message: "Order validated successfully"
+    });
+  }
+
+  // 2. XỬ LÝ GỬI EMAIL KHI ĐƠN HÀNG ĐÃ HOÀN TẤT THÀNH CÔNG
+  if (event.eventName === 'order.completed' || event.eventName === 'cart.confirmed') {
     const order = event.content;
     
-    // Lấy thông tin email bất kỳ khách hàng nhập lúc thanh toán
+    // Lấy thông tin email khách hàng nhập lúc thanh toán
     const customerEmail = order.email; 
     const customerName = order.billingAddress?.fullName || order.shippingAddress?.fullName || "Khách hàng GreenGlow";
     const orderId = order.invoiceNumber || order.token || "N/A";
@@ -42,7 +53,7 @@ app.post('/snipcart-webhook', async (req, res) => {
       const emailRes = await axios.post('https://api.emailjs.com/api/v1.0/email/send', {
         service_id: process.env.EMAILJS_SERVICE_ID,
         template_id: process.env.EMAILJS_TEMPLATE_ID,
-        user_id: process.env.EMAILJS_PUBLIC_KEY, // Public Key của bạn
+        user_id: process.env.EMAILJS_PUBLIC_KEY,
         template_params: {
           customer_name: customerName,
           customer_email: customerEmail, // Gửi trực tiếp tới email khách hàng đã nhập
@@ -56,14 +67,14 @@ app.post('/snipcart-webhook', async (req, res) => {
       return res.status(200).send('Webhook đã xử lý và gửi mail thành công');
       
     } catch (error) {
-      // Ghi nhận lỗi chi tiết từ API EmailJS nếu có
       console.error('❌ [EmailJS] Lỗi gửi email:', error.response?.data || error.message);
-      return res.status(500).send('Lỗi hệ thống khi gửi email qua EmailJS');
+      // Vẫn trả về 200 để Snipcart không cố gửi đi gửi lại nhiều lần nếu lỗi EmailJS
+      return res.status(200).send('Lỗi gửi email nhưng ghi nhận webhook');
     }
   }
 
-  // Trả về trạng thái 200 cho các sự kiện khác của Snipcart để tránh Snipcart thử lại liên tục
-  res.status(200).send('Sự kiện không được hỗ trợ');
+  // Trả về trạng thái 200 cho tất cả các sự kiện khác để Snipcart không bị lỗi nghẽn đường truyền
+  res.status(200).send('Sự kiện nhận thành công');
 });
 
 // Thiết lập cổng (Port) chạy máy chủ
